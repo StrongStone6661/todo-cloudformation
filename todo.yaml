@@ -1,11 +1,7 @@
-
+# AWS CloudFormation Template for Todo App
 AWSTemplateFormatVersion: '2010-09-09'
 Description: VPC with 2 public and 2 private subnets across 2 AZs, ECS Cluster, Task Definition, Service, ALB, and CodeDeploy for Blue-Green Deployment
 
-Parameters:
-  ImageUrl:
-    Type: String
-    Description: The URL of the Docker image in ECR 
 
 Resources:
   # Existing VPC Resources
@@ -169,6 +165,8 @@ Resources:
   # ECS Task Definition
   ECSTaskDefinition:
     Type: AWS::ECS::TaskDefinition
+    DependsOn:
+      - ECSTaskExecutionRole
     Properties:
       Family: todo-app-task
       NetworkMode: awsvpc
@@ -224,6 +222,10 @@ Resources:
   # Application Load Balancer
   ApplicationLoadBalancer:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    DependsOn:
+      - PublicSubnet1
+      - PublicSubnet2
+      - ALBSecurityGroup
     Properties:
       Name: TodoAppALB
       Subnets:
@@ -236,11 +238,13 @@ Resources:
         - Key: Name
           Value: TodoAppALB
 
-  # ALB Target Group
-  TargetGroup:
+  # ALB Target Group (Blue)
+  TargetGroupBlue:
     Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn:
+      - ApplicationLoadBalancer
     Properties:
-      Name: TodoAppTargetGroup
+      Name: TodoAppTargetGroupBlue
       Port: 8080
       Protocol: HTTP
       VpcId: !Ref VPC
@@ -248,22 +252,53 @@ Resources:
       HealthCheckPath: /
       Tags:
         - Key: Name
-          Value: TodoAppTargetGroup
+          Value: TodoAppTargetGroupBlue
+
+  # ALB Target Group (Green)
+  TargetGroupGreen:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+    DependsOn:
+      - ApplicationLoadBalancer
+    Properties:
+      Name: TodoAppTargetGroupGreen
+      Port: 8080
+      Protocol: HTTP
+      VpcId: !Ref VPC
+      TargetType: ip
+      HealthCheckPath: /
+      Tags:
+        - Key: Name
+          Value: TodoAppTargetGroupGreen
 
   # ALB Listener
   ALBListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    DependsOn:
+      - TargetGroupBlue
+      - TargetGroupGreen
     Properties:
       LoadBalancerArn: !Ref ApplicationLoadBalancer
       Port: 80
       Protocol: HTTP
       DefaultActions:
         - Type: forward
-          TargetGroupArn: !Ref TargetGroup
+          ForwardConfig:
+            TargetGroups:
+              - TargetGroupArn: !Ref TargetGroupBlue
+                Weight: 1
+              - TargetGroupArn: !Ref TargetGroupGreen
+                Weight: 0
+          Order: 1
 
   # ECS Service
   ECSService:
     Type: AWS::ECS::Service
+    DependsOn:
+      - ECSTaskDefinition
+      - TargetGroupBlue
+      - TargetGroupGreen
+      - ALBListener
+      - ECSSecurityGroup
     Properties:
       Cluster: !Ref ECSCluster
       ServiceName: TodoAppService
@@ -279,7 +314,7 @@ Resources:
             - !Ref ECSSecurityGroup
           AssignPublicIp: ENABLED
       LoadBalancers:
-        - TargetGroupArn: !Ref TargetGroup
+        - TargetGroupArn: !Ref TargetGroupBlue
           ContainerName: todo-app
           ContainerPort: 8080
       DeploymentController:
@@ -310,6 +345,11 @@ Resources:
   # CodeDeploy Deployment Group
   CodeDeployDeploymentGroup:
     Type: AWS::CodeDeploy::DeploymentGroup
+    DependsOn:
+      - ECSService
+      - CodeDeployServiceRole
+      - TargetGroupBlue
+      - TargetGroupGreen
     Properties:
       ApplicationName: !Ref CodeDeployApplication
       DeploymentGroupName: TodoAppDeploymentGroup
@@ -329,8 +369,13 @@ Resources:
         DeploymentReadyOption:
           ActionOnTimeout: CONTINUE_DEPLOYMENT
       LoadBalancerInfo:
-        TargetGroupInfoList:
-          - Name: TodoAppTargetGroup
+        TargetGroupPairInfoList:
+          - ProdTrafficRoute:
+              ListenerArns:
+                - !Ref ALBListener
+            TargetGroups:
+              - Name: !GetAtt TargetGroupBlue.TargetGroupName
+              - Name: !GetAtt TargetGroupGreen.TargetGroupName
       ECSServices:
         - ClusterName: !Ref ECSCluster
           ServiceName: TodoAppService
