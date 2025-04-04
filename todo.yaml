@@ -38,6 +38,17 @@ Resources:
         - Key: Name
           Value: PublicSubnet2
 
+  PublicSubnet3:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref VPC
+      CidrBlock: 10.0.4.0/24
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: PublicSubnet3
+
   # Private Subnets
   PrivateSubnet1:
     Type: AWS::EC2::Subnet
